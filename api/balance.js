@@ -23,30 +23,33 @@ export default async function handler(req, res) {
 
     const headers = { Authorization: "Bearer " + token };
 
-    // Fetch released payments (available balance) - paginate up to 1000
-    async function fetchPayments(status_detail, offset = 0, acc = 0) {
-      const url = "https://api.mercadopago.com/v1/payments/search?limit=100&offset=" + offset +
-        "&sort=date_created&criteria=desc&status=approved&money_release_status=" + status_detail;
-      const r = await fetch(url, { headers });
-      const d = await r.json();
-      if (!d.results || d.results.length === 0) return acc;
-      const sum = d.results.reduce((s, p) => s + (p.transaction_amount || 0) - (p.amount_refunded || 0), 0);
-      const newAcc = acc + sum;
-      if (d.paging.offset + d.results.length < d.paging.total && d.paging.offset < 900) {
-        return fetchPayments(status_detail, offset + 100, newAcc);
+    // Date range: last 90 days
+    const now = new Date();
+    const from = new Date(now - 90 * 24 * 60 * 60 * 1000).toISOString().split('.')[0] + '.000-00:00';
+    const to = now.toISOString().split('.')[0] + '.000-00:00';
+
+    // Fetch released and pending in parallel, max 2 pages each (200 payments)
+    async function sumPayments(releaseStatus) {
+      let total = 0;
+      for (let offset = 0; offset < 200; offset += 100) {
+        const url = "https://api.mercadopago.com/v1/payments/search?limit=100&offset=" + offset +
+          "&status=approved&money_release_status=" + releaseStatus +
+          "&begin_date=" + from + "&end_date=" + to;
+        const r = await fetch(url, { headers });
+        const d = await r.json();
+        if (!d.results || d.results.length === 0) break;
+        total += d.results.reduce((s, p) => s + (p.transaction_amount || 0) - (p.amount_refunded || 0), 0);
+        if (d.results.length < 100) break;
       }
-      return newAcc;
+      return Math.round(total * 100) / 100;
     }
 
     const [released, pending] = await Promise.all([
-      fetchPayments("released"),
-      fetchPayments("pending")
+      sumPayments("released"),
+      sumPayments("pending")
     ]);
 
-    res.status(200).json({
-      available_balance: Math.round(released * 100) / 100,
-      pending_amount: Math.round(pending * 100) / 100
-    });
+    res.status(200).json({ available_balance: released, pending_amount: pending });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
