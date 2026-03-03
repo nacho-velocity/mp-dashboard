@@ -7,31 +7,20 @@ export default async function handler(req, res) {
   const { token } = req.body;
   if (!token) return res.status(400).json({ error: "Token requerido" });
   try {
-    // Get user ID first
     const userRes = await fetch("https://api.mercadopago.com/v1/users/me", {
       headers: { Authorization: "Bearer " + token }
     });
     const userData = await userRes.json();
-    if (!userRes.ok) return res.status(userRes.status).json({ error: userData.message || "Error usuario" });
+    if (!userRes.ok) return res.status(200).json({ debug: "user_error", data: userData });
     const userId = userData.id;
 
-    // Try mercadolibre.com domain (works for AR accounts)
-    const balRes = await fetch("https://api.mercadolibre.com/users/" + userId + "/mercadopago_account/balance", {
-      headers: { Authorization: "Bearer " + token }
-    });
-    const balData = await balRes.json();
+    const [r1, r2, r3] = await Promise.all([
+      fetch("https://api.mercadolibre.com/users/" + userId + "/mercadopago_account/balance", { headers: { Authorization: "Bearer " + token } }).then(r => r.json()).then(d => ({ url: "mercadolibre", status: "ok", data: d })).catch(e => ({ url: "mercadolibre", error: e.message })),
+      fetch("https://api.mercadopago.com/v1/account/balance", { headers: { Authorization: "Bearer " + token } }).then(r => r.json()).then(d => ({ url: "mp_v1_balance", data: d })).catch(e => ({ url: "mp_v1_balance", error: e.message })),
+      fetch("https://api.mercadopago.com/users/" + userId + "/mercadopago_account/balance", { headers: { Authorization: "Bearer " + token } }).then(r => r.json()).then(d => ({ url: "mp_user_balance", data: d })).catch(e => ({ url: "mp_user_balance", error: e.message }))
+    ]);
 
-    // If that fails try mercadopago.com domain
-    if (!balRes.ok) {
-      const balRes2 = await fetch("https://api.mercadopago.com/v1/account/balance", {
-        headers: { Authorization: "Bearer " + token }
-      });
-      const balData2 = await balRes2.json();
-      if (!balRes2.ok) return res.status(balRes2.status).json({ error: JSON.stringify(balData2) });
-      return res.status(200).json(balData2);
-    }
-
-    res.status(200).json(balData);
+    res.status(200).json({ userId, debug: true, r1, r2, r3 });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
