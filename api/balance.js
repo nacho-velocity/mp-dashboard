@@ -9,8 +9,6 @@ export default async function handler(req, res) {
 
   try {
     let token = directToken;
-
-    // Get OAuth token if client credentials provided
     if (client_id && client_secret) {
       const oauthRes = await fetch("https://api.mercadopago.com/oauth/token", {
         method: "POST",
@@ -21,47 +19,32 @@ export default async function handler(req, res) {
       if (!oauthData.access_token) return res.status(200).json({ error: "OAuth failed", detail: oauthData });
       token = oauthData.access_token;
     }
-
     if (!token) return res.status(400).json({ error: "Token requerido" });
 
-    // Extract user ID from token
-    const parts = token.split("-");
-    const userId = parts[parts.length - 1];
-
-    // Probe all known endpoints
-    const probes = [
-      "https://api.mercadopago.com/v1/account/settlement_report",
-      "https://api.mercadopago.com/v1/account/release_report",
-      "https://api.mercadopago.com/v1/account/bank_report",
-      "https://api.mercadopago.com/v1/payments/search?limit=1",
-      "https://api.mercadolibre.com/users/" + userId,
-      "https://api.mercadolibre.com/users/" + userId + "/mercadopago_account/balance",
-      "https://api.mercadopago.com/users/" + userId + "/mercadopago_account/balance",
-      "https://api.mercadopago.com/v1/account/balance",
-      "https://api.mercadolibre.com/sites/MLA/payment_methods",
-    ];
-
-    const results = await Promise.all(probes.map(url =>
-      fetch(url, { headers: { Authorization: "Bearer " + token } })
-        .then(r => ({ url, status: r.status, ok: r.ok, data: r.json() }))
-        .then(async o => ({ url: o.url, status: o.status, data: await o.data }))
-        .catch(e => ({ url, error: e.message }))
-    ));
-
-    // Check if any has balance data
-    for (const r of results) {
-      if (!r.data) continue;
-      if (r.data.available_balance !== undefined) {
-        return res.status(200).json({ available_balance: r.data.available_balance, pending_amount: r.data.pending_amount || 0 });
-      }
-      if (r.data.own_money !== undefined) {
-        return res.status(200).json({ available_balance: r.data.own_money, pending_amount: r.data.blocked_money || 0 });
-      }
-    }
-
-    // Return probe results for debugging
-    const summary = results.map(r => ({ url: r.url.replace('https://api.mercadopago.com','MP').replace('https://api.mercadolibre.com','ML'), status: r.status, keys: r.data ? Object.keys(r.data).slice(0,5) : r.error }));
-    res.status(200).json({ debug: true, userId, token: token.substring(0,25)+"...", summary });
+    // Get one payment to see structure and find money_release_date / available fields
+    const r = await fetch("https://api.mercadopago.com/v1/payments/search?limit=1&sort=date_created&criteria=desc", {
+      headers: { Authorization: "Bearer " + token }
+    });
+    const data = await r.json();
+    const payment = data.results?.[0];
+    
+    res.status(200).json({ 
+      debug: true,
+      paging: data.paging,
+      payment_keys: payment ? Object.keys(payment) : [],
+      sample: payment ? {
+        id: payment.id,
+        status: payment.status,
+        transaction_amount: payment.transaction_amount,
+        net_received_amount: payment.net_received_amount,
+        amount_refunded: payment.amount_refunded,
+        money_release_date: payment.money_release_date,
+        date_approved: payment.date_approved,
+        available_balance: payment.available_balance,
+        collector_id: payment.collector_id,
+        operation_type: payment.operation_type,
+      } : null
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
