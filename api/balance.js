@@ -21,29 +21,31 @@ export default async function handler(req, res) {
     }
     if (!token) return res.status(400).json({ error: "Token requerido" });
 
-    // Get one payment to see structure and find money_release_date / available fields
-    const r = await fetch("https://api.mercadopago.com/v1/payments/search?limit=1&sort=date_created&criteria=desc", {
-      headers: { Authorization: "Bearer " + token }
-    });
-    const data = await r.json();
-    const payment = data.results?.[0];
-    
-    res.status(200).json({ 
-      debug: true,
-      paging: data.paging,
-      payment_keys: payment ? Object.keys(payment) : [],
-      sample: payment ? {
-        id: payment.id,
-        status: payment.status,
-        transaction_amount: payment.transaction_amount,
-        net_received_amount: payment.net_received_amount,
-        amount_refunded: payment.amount_refunded,
-        money_release_date: payment.money_release_date,
-        date_approved: payment.date_approved,
-        available_balance: payment.available_balance,
-        collector_id: payment.collector_id,
-        operation_type: payment.operation_type,
-      } : null
+    const headers = { Authorization: "Bearer " + token };
+
+    // Fetch released payments (available balance) - paginate up to 1000
+    async function fetchPayments(status_detail, offset = 0, acc = 0) {
+      const url = "https://api.mercadopago.com/v1/payments/search?limit=100&offset=" + offset +
+        "&sort=date_created&criteria=desc&status=approved&money_release_status=" + status_detail;
+      const r = await fetch(url, { headers });
+      const d = await r.json();
+      if (!d.results || d.results.length === 0) return acc;
+      const sum = d.results.reduce((s, p) => s + (p.transaction_amount || 0) - (p.amount_refunded || 0), 0);
+      const newAcc = acc + sum;
+      if (d.paging.offset + d.results.length < d.paging.total && d.paging.offset < 900) {
+        return fetchPayments(status_detail, offset + 100, newAcc);
+      }
+      return newAcc;
+    }
+
+    const [released, pending] = await Promise.all([
+      fetchPayments("released"),
+      fetchPayments("pending")
+    ]);
+
+    res.status(200).json({
+      available_balance: Math.round(released * 100) / 100,
+      pending_amount: Math.round(pending * 100) / 100
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
