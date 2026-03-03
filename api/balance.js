@@ -19,20 +19,31 @@ export default async function handler(req, res) {
     if (!token) return res.status(400).json({ error: "Token requerido" });
     const headers = { Authorization: "Bearer " + token };
 
-    // Get last 10 payments with NO filters to see what fields look like
-    const raw = await fetch("https://api.mercadopago.com/v1/payments/search?limit=10&sort=date_created&criteria=desc", { headers }).then(r => r.json());
-    
-    const sample = (raw.results || []).map(p => ({
-      id: p.id,
-      status: p.status,
-      transaction_amount: p.transaction_amount,
-      net_received_amount: p.net_received_amount,
-      money_release_status: p.money_release_status,
-      money_release_date: p.money_release_date,
-      operation_type: p.operation_type,
-    }));
+    // Sum ALL released payments (no date filter) up to 1000 most recent
+    async function sumByStatus(releaseStatus) {
+      let total = 0;
+      let offset = 0;
+      while (offset < 1000) {
+        const url = "https://api.mercadopago.com/v1/payments/search?limit=100&offset=" + offset +
+          "&status=approved&money_release_status=" + releaseStatus +
+          "&sort=date_created&criteria=desc";
+        const d = await fetch(url, { headers }).then(r => r.json());
+        if (!d.results || d.results.length === 0) break;
+        for (const p of d.results) {
+          total += (p.transaction_amount || 0) - (p.amount_refunded || 0);
+        }
+        if (d.results.length < 100) break;
+        offset += 100;
+      }
+      return Math.round(total * 100) / 100;
+    }
 
-    res.status(200).json({ total_payments: raw.paging?.total, sample });
+    const [released, pending] = await Promise.all([
+      sumByStatus("released"),
+      sumByStatus("pending")
+    ]);
+
+    res.status(200).json({ available_balance: released, pending_amount: pending });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
